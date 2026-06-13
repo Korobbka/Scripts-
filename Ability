@@ -1,0 +1,211 @@
+LocalScript:
+
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local localPlayer = game.Players.LocalPlayer
+
+local massInfectionEvent = ReplicatedStorage:WaitForChild("MasssInfection")
+
+local ZOOM_MIN_TARGET = 3
+local ZOOM_MAX_TARGET = 15
+
+local zoomInInfo = TweenInfo.new(2, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+local zoomOutInfo = TweenInfo.new(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+
+local isCasting = false
+
+local zoomInGoal = {
+	CameraMinZoomDistance = ZOOM_MIN_TARGET,
+	CameraMaxZoomDistance = ZOOM_MIN_TARGET
+}
+local zoomOutGoal = {
+	CameraMinZoomDistance = ZOOM_MAX_TARGET,
+	CameraMaxZoomDistance = ZOOM_MAX_TARGET
+}
+
+local animObject = Instance.new("Animation")
+animObject.AnimationId = "rbxassetid://97163586161932"
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end 
+
+	if input.KeyCode == Enum.KeyCode.R then
+		if isCasting then return end
+		local character = localPlayer.Character
+		if not character then return end
+
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if not humanoid or humanoid.Health <= 0 then return end
+		
+		local animator = humanoid:WaitForChild("Animator")
+		local track = animator:LoadAnimation(animObject)
+		isCasting = true
+		track:Play()
+		track:AdjustSpeed(0.2)
+		
+		humanoid.WalkSpeed = 0
+		humanoid.JumpPower = 0
+		massInfectionEvent:FireServer()
+		local zoomInTween = TweenService:Create(localPlayer, zoomInInfo, zoomInGoal)
+		zoomInTween:Play()
+		zoomInTween.Completed:Wait()
+		if humanoid.Health <= 0 then 
+			isCasting = false
+			track:Destroy()
+			return 
+		end
+		local zoomOutTween = TweenService:Create(localPlayer, zoomOutInfo, zoomOutGoal)
+		zoomOutTween:Play()
+		zoomOutTween.Completed:Wait()
+		isCasting = false
+		if track then
+			track:Stop()
+			track:Destroy()
+		end
+
+	end
+end)
+
+
+
+
+
+ServerScript:
+
+
+
+
+
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local Debris = game:GetService("Debris")
+
+local MassInfectionEvent = ReplicatedStorage:WaitForChild("MasssInfection")
+local OpenWarningGUIEvent = ReplicatedStorage:WaitForChild("OpenWarningGUI")
+local ShockwaveTranscript = ReplicatedStorage.Transcript:WaitForChild("Shockwave")
+local ConfigsModule = require(ServerScriptService:WaitForChild("MassInfectionConfigs"))
+local cooldownTable = {}
+local cooldownDuration = ConfigsModule.cooldown
+local projectileLifetime = ConfigsModule.livetime
+local damageAmount = ConfigsModule.damage
+--------------------------------------------------------------------------------
+MassInfectionEvent.OnServerEvent:Connect(function(player)
+	local userId = player.UserId
+	local currentTime = os.clock()
+	local character = player.Character
+	if not character or not character:FindFirstChild("HumanoidRootPart") then 
+		return 
+	end
+	if cooldownTable[userId] then
+		local timePassed = currentTime - cooldownTable[userId]
+		if timePassed < cooldownDuration then
+			return
+		end
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.Health <= 0 then return end
+	local animPlayTime = 2.15
+	local boostTime = 1
+	humanoid.WalkSpeed = 0
+	humanoid.JumpPower = 0
+	cooldownTable[userId] = currentTime
+	task.wait(animPlayTime)
+	if not humanoid or not humanoid.Parent or humanoid.Health <= 0 then 
+		return 
+	end
+	humanoid.WalkSpeed = 26
+	humanoid.JumpPower = 50
+	task.delay(boostTime, function()
+		if not humanoid or not humanoid.Parent then return end
+		humanoid.WalkSpeed = 16
+	end)
+
+	----------------------------------------------------------------------------
+
+	----------------------------------------------------------------------------
+	local projectileClone = ShockwaveTranscript:Clone()
+	projectileClone.Anchored = false
+	projectileClone.CanCollide = false    
+	projectileClone.CanQuery = true 
+	projectileClone.Parent = workspace
+
+	local spawnCFrame = character:GetPivot() * CFrame.new(0, -3, 0)
+	projectileClone:PivotTo(spawnCFrame)
+
+	----------------------------------------------------------------------------
+
+	----------------------------------------------------------------------------
+	local attachment = Instance.new("Attachment")
+	attachment.Parent = projectileClone
+
+	local linearVelocity = Instance.new("LinearVelocity")
+	linearVelocity.Parent = projectileClone
+	linearVelocity.MaxForce = 9999999
+	linearVelocity.Attachment0 = attachment
+	linearVelocity.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+	linearVelocity.RelativeTo = Enum.ActuatorRelativeTo.Attachment0
+	linearVelocity.VectorVelocity = Vector3.new(0, 0, -100)
+
+	----------------------------------------------------------------------------
+
+	----------------------------------------------------------------------------
+	local raycastOrigin = character.HumanoidRootPart.Position
+	local raycastDirection = character.HumanoidRootPart.CFrame.LookVector * 250
+
+	local raycastParameters = RaycastParams.new()
+	raycastParameters.FilterType = Enum.RaycastFilterType.Exclude
+	raycastParameters.FilterDescendantsInstances = {character}
+
+	local overlapParameters = OverlapParams.new()
+	local filterInstancesList = {character, projectileClone}
+	overlapParameters.FilterType = Enum.RaycastFilterType.Exclude
+	overlapParameters.FilterDescendantsInstances = filterInstancesList
+
+	----------------------------------------------------------------------------
+	
+	----------------------------------------------------------------------------
+	local raycastResult = workspace:Raycast(raycastOrigin, raycastDirection, raycastParameters)
+	if raycastResult then
+		local model = raycastResult.Instance:FindFirstAncestorOfClass("Model")
+		if model and model:FindFirstChildOfClass("Humanoid") then
+			OpenWarningGUIEvent:FireClient(player, true)
+		end
+	end
+
+	----------------------------------------------------------------------------
+	
+	----------------------------------------------------------------------------
+	local heartbeatConnection
+	heartbeatConnection = RunService.Heartbeat:Connect(function()
+		if not projectileClone or not projectileClone.Parent then
+			heartbeatConnection:Disconnect()
+			return 
+		end
+
+		local overlappingParts = workspace:GetPartsInPart(projectileClone, overlapParameters)
+		if #overlappingParts > 0 then
+			for _, part in ipairs(overlappingParts) do
+				local model = part:FindFirstAncestorOfClass("Model")
+				if model then
+					local targetHumanoid = model:FindFirstChildOfClass("Humanoid")
+					if targetHumanoid and targetHumanoid.Health > 0 then
+						targetHumanoid:TakeDamage(damageAmount)
+						table.insert(filterInstancesList, model)
+						overlapParameters.FilterDescendantsInstances = filterInstancesList
+					end
+				end
+			end
+		end				
+	end)
+
+	----------------------------------------------------------------------------
+	Debris:AddItem(projectileClone, projectileLifetime)
+end)
+
+--------------------------------------------------------------------------------
+Players.PlayerRemoving:Connect(function(player)
+	cooldownTable[player.UserId] = nil
+end)
