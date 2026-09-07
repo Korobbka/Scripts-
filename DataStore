@@ -4,112 +4,170 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local MoneyDataStore = DataStoreService:GetDataStore("MoneyDataStore_v1")
 local PurchaseEvent = ReplicatedStorage:WaitForChild("DataStoreMoney")
+local ToolsFolder = ReplicatedStorage:WaitForChild("Tools")
 
 local SHOP_ITEMS = {
-	sword = 100, armor = 200, health = 300, revolver = 400,
-	shotgun = 500, rocket = 600, grenade = 700, medkit = 800, ak47 = 900,
+	sword = 100,
+	armor = 200,
+	health = 300,
+	revolver = 400,
+	shotgun = 500,
+	rocket = 600,
+	grenade = 700,
+	medkit = 800,
+	ak47 = 900,
 }
+
+local NUMBER_SUFFIXES = {"K", "M", "B", "T", "Qd"}
+local COOLDOWN_TIME = 0.3
+
 local purchaseCooldowns = {}
 
-local function formatNumber(value)
-	if value < 1000 then return tostring(value) end
-	local suffixes = {"K", "M", "Q"}
-	local i = 0
-	while value >= 1000 and i < #suffixes do
-		value /= 1000
-		i += 1
+local function FormatNumber(value)
+	if value < 1000 then 
+		return tostring(value) 
 	end
-	return string.format("%.1f%s", value, suffixes[i])
+
+	local index = 0
+	while value >= 1000 and index < #NUMBER_SUFFIXES do
+		value /= 1000
+		index += 1
+	end
+
+	return string.format("%.1f%s", value, NUMBER_SUFFIXES[index])
 end
 
-local function savePlayerData(player)
+local function SavePlayerData(player)
 	if player:GetAttribute("DataLoadFailed") then return end
+
 	local rilMoney = player:FindFirstChild("rilMoney")
 	if not rilMoney then return end
 
-	pcall(function()
+	local success, err = pcall(function()
 		MoneyDataStore:UpdateAsync(player.UserId, function()
 			return rilMoney.Value
 		end)
 	end)
-end
 
-local function giveItem(player, itemName)
-	local itemTemplate = ReplicatedStorage:FindFirstChild("Tool")
-	if itemTemplate then
-		local clone = itemTemplate:Clone()
-		clone.Name = itemName
-		clone.Parent = player.Backpack
+	if not success then
+		warn(`[DataStore] Ошибка сохранения для {player.Name}: {err}`)
 	end
 end
 
-PurchaseEvent.OnServerEvent:Connect(function(player, itemName)
+local function GiveItem(player, itemName)
+	local itemTemplate = ToolsFolder:FindFirstChild(itemName)
+	if not itemTemplate then
+		warn(`[Shop] Предмет {itemName} не найден в ReplicatedStorage.Tools`)
+		return false
+	end
+
+	local backpack = player:FindFirstChild("Backpack")
+	if not backpack then return false end
+
+	local clone = itemTemplate:Clone()
+	clone.Parent = backpack
+
+	local starterGear = player:FindFirstChild("StarterGear")
+	if starterGear then
+		itemTemplate:Clone().Parent = starterGear
+	end
+
+	return true
+end
+
+local function OnPurchaseRequest(player, itemName)
+	if type(itemName) ~= "string" then return end
+
+	local now = os.clock()
+	local lastPurchase = purchaseCooldowns[player] or 0
+	if now - lastPurchase < COOLDOWN_TIME then return end
+
 	local cost = SHOP_ITEMS[itemName]
-	if not cost or purchaseCooldowns[player] then return end
+	if not cost then return end
 
 	local rilMoney = player:FindFirstChild("rilMoney")
 	if not rilMoney or rilMoney.Value < cost then return end
 
-	purchaseCooldowns[player] = true
+	purchaseCooldowns[player] = now
+
 	rilMoney.Value -= cost
-	giveItem(player, itemName)
 
-	task.wait(0.5)
-	if player.Parent then 
-		purchaseCooldowns[player] = nil 
+	local given = GiveItem(player, itemName)
+	if not given then
+		rilMoney.Value += cost
 	end
-end)
+end
 
-Players.PlayerAdded:Connect(function(player)
+local function OnPlayerAdded(player)
 	local userId = player.UserId
 	local savedData = nil
-	local success, err
+	local success = false
 	local attempts = 0
 
 	repeat
-		success, err = pcall(function()
+		attempts += 1
+		success = pcall(function()
 			savedData = MoneyDataStore:GetAsync(userId)
 		end)
-		if not success then
-			attempts += 1
+
+		if not success and attempts < 3 then
 			task.wait(1)
 		end
 	until success or attempts >= 3
 
 	if not success then
 		player:SetAttribute("DataLoadFailed", true)
-		player:Kick("DataStore Error. Please rejoin.")
+		player:Kick("Ошибка загрузки данных. Перезайдите.")
 		return
 	end
 
 	local leaderstats = Instance.new("Folder")
 	leaderstats.Name = "leaderstats"
-	leaderstats.Parent = player
 
 	local moneyDisplay = Instance.new("StringValue")
 	moneyDisplay.Name = "money"
-	moneyDisplay.Parent = leaderstats
 
 	local rilMoney = Instance.new("IntValue")
 	rilMoney.Name = "rilMoney"
 	rilMoney.Value = savedData or 2000
-	rilMoney.Parent = player
 
-	moneyDisplay.Value = formatNumber(rilMoney.Value)
+	moneyDisplay.Value = FormatNumber(rilMoney.Value)
+	moneyDisplay.Parent = leaderstats
+	rilMoney.Parent = player
+	leaderstats.Parent = player
 
 	rilMoney.Changed:Connect(function(newValue)
-		moneyDisplay.Value = formatNumber(newValue)
+		moneyDisplay.Value = FormatNumber(newValue)
 	end)
-end)
+end
 
-Players.PlayerRemoving:Connect(function(player)
-	savePlayerData(player)
+local function OnPlayerRemoving(player)
 	purchaseCooldowns[player] = nil
-end)
+	SavePlayerData(player)
+end
+
+PurchaseEvent.OnServerEvent:Connect(OnPurchaseRequest)
+Players.PlayerAdded:Connect(OnPlayerAdded)
+Players.PlayerRemoving:Connect(OnPlayerRemoving)
+
+for _, player in Players:GetPlayers() do
+	task.spawn(OnPlayerAdded, player)
+end
 
 game:BindToClose(function()
-	for _, player in ipairs(Players:GetPlayers()) do
-		savePlayerData(player)
+	local playersList = Players:GetPlayers()
+	if #playersList == 0 then return end
+
+	local runningThreads = #playersList
+
+	for _, player in playersList do
+		task.spawn(function()
+			SavePlayerData(player)
+			runningThreads -= 1
+		end)
 	end
-	task.wait(2)
+
+	while runningThreads > 0 do
+		task.wait(0.1)
+	end
 end)
